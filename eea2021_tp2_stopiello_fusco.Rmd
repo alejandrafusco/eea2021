@@ -1,0 +1,177 @@
+---
+title: "LIME model agnostic explanations"
+output:
+  html_notebook:
+    theme: spacelab
+    toc: yes
+    toc_float: yes
+    df_print: paged
+---
+
+
+# TP 2: Implementación LIME
+
+## Objetivo
+
+Explicar las bases del método de LIME que permite explicar modelos de caja negra.
+Entendimiento teórico del uso de modelos sustitutos locales que permiten la interpretabilidad de modelos de caja negra subyacentes.
+Entender el tipo de datos donde puede utilizarse esta técnica (texto, datos tabulados e imágenes).
+Algoritmos con el cual puede implementarse (árboles, regresión lineal regularizada con Lasso, etc.).
+Comprensión de su aplicación paso a paso en R utilizando el dataset seleccionado como ejemplo.
+
+
+
+```{r}
+library(tidyverse)
+library(tidymodels)
+library(caret)
+library(GGally)
+library(lime)
+```
+
+
+```{r, message=FALSE}
+## cargamos el dataset
+df = read_csv("./heart.csv", progress = FALSE)
+
+```
+A partir de la documentacion del dataset sabemos que:
+
+* Age: Edad del paciente
+* Sex: Sexo biológico
+* ChestPainType: Tipo de dolor de pecho (ATA: Angina atipica, NAP: Dolor no-anginal, ASY: Asintomatico, TA: Angina tipica)
+* RestingBP: Presion sanguinea en reposo [mm Hg]
+* Cholesterol: Colesterol en sangre [mm/dl]
+* FastinBS: Glucemia en ayuno (1: Glucemia mayor a valor normal de 120mg/dl, 0 si valor normal)
+* RestingECG: Interpretacion de los resultados de Electrocardiograma en reposo (Normal: normal, LVH: hipertrofia ventricular izquierda, ST: anormalidad en la onda ST-T del electrocardiograma)
+* MaxHR: Maxima frecuencia cardiaca alcanzada
+* ExcercisaAngina: Angina inducida por ejercicio (True, False)
+* Oldpeak: Valor de la depresion de la onda ST del electrocardiograma
+* ST_Slope: Pendiente del pico ST durante el ejercicio (Up: hacia arriba, Flat: chata, Down: hacia abajo)
+*HeartDisease: Condicion cardiaca
+
+
+```{r}
+## veo la estructura general
+df %>% glimpse
+```
+
+```{r}
+## conteo de datos is.na por variable
+df %>%
+  select(everything()) %>%  
+  summarise_all(funs(sum(is.na(.))))
+```
+
+```{r}
+## muestro los valores unicos de cada columna no numerica
+for (i in df %>% select(where(is.character)) %>% names){
+  print(unique(df[i]))
+}
+```
+```{r}
+## evaluo la relacion entre variables
+
+df <- df %>% mutate(condicion_cardiaca = case_when
+      (
+      HeartDisease == 1 ~ "si",
+      HeartDisease == 0 ~ "no",
+      TRUE ~ "na"
+      )
+)
+
+```
+```{r}
+# df %>% ggpairs(aes(color=condicion_cardiaca),  progress = FALSE)
+df %>% select(-HeartDisease) %>% select(where(is.numeric) | Sex | condicion_cardiaca) %>% ggpairs(aes(color=condicion_cardiaca),  progress = FALSE)
+
+```
+```{r}
+df %>% select(where(is.character) | HeartDisease) %>% ggpairs(aes(color=condicion_cardiaca),  progress = FALSE)
+```
+
+
+
+```{r}
+set.seed(42)
+partes <- createDataPartition(df$HeartDisease, p=0.8, list= FALSE)
+train_df <-df[partes,]
+test_df <-df[-partes,]
+```
+
+## Regresion Logistica
+
+```{r}
+## Entrenamos un modelo de regresion logistica sobre los datos de train
+
+train_df_lr <- train_df
+train_df_lr$HeartDisease <- as.factor(train_df_lr$HeartDisease)
+model_lr <- train(HeartDisease~., train_df_lr %>% select(-condicion_cardiaca), method = 'glm')
+
+```
+```{r}
+summary(model_lr)
+```
+
+## LIME
+
+```{r}
+## usamos LIME para generar un explicador, a partir de los datos y del modelo
+
+
+# Create an explainer object
+explainer_lr <- lime(train_df_lr, model_lr)
+
+```
+Generamos la explicación de las predicciones, con la función explain y el 'explicador' antes generado Los parametros mas importantes son:
+
+* n_labels --> Para el caso de clasificadores con mas de una label, se seleccionan la cantidad que se busca explicar, en nuestro caso solo 1
+* n_features --> La cantidad de features por observacion a explicar
+
+```{r}
+
+## Generamos las explicaciones para cada observacion del dataset de test
+test_df_lr <- test_df
+test_df_lr$HeartDisease <- as.factor(test_df_lr$HeartDisease)
+
+# explain lr
+explanation_lr <- explain(test_df_lr, explainer_lr, n_labels = 1, n_features = 3)
+
+```
+El resultado es un dataframe que nos muestra la explicacion generada para observacion:
+
+* model_type, corresponde al tipo de modelo utilizado
+* case: indica el nombre de la observacion
+* label: el label que esta siendo explicado
+* label_prob: 
+* model_r2: La calidad del modelo generado para la explicacion
+* model_intercept: El intercept del modelo generado para la explicacion
+* model_prediction: La prediccion generada por el modelo explicativo para la observacion
+* Feature: La Feature usada para la explicacion
+* Feature_weight: El peso asignado a la feature al modelo explicativo
+* data: Data original de la observacion
+* prediction: Prediccion original de la observacion
+
+
+```{r}
+explanation_lr
+## notar que case corresponde con el rowname en el datafame de test utilizado
+```
+
+```{r}
+unique(explanation_lr$feature)
+```
+```{r}
+plot_features(explanation_lr, case= c(1,2,90, 89))
+```
+
+
+```{r}
+##genero predicciones sobre el dataset de test
+predicted_lr <-predict(model_lr, test_df_lr)
+test_df_lr$predicted <- predicted_lr
+## agrego una columna que indique si la prediccion fue un acierto o no, util para graficar mas adelante
+test_df_lr <- test_df_lr %>% mutate(Aciertos = HeartDisease == predicted)
+```
+
+
